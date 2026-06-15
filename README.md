@@ -1,6 +1,6 @@
 ## License
 
-Copyright © 2026 [Your Name]. All rights reserved. 
+Copyright © 2026 SAMIULLA S. All rights reserved. 
 
 This project and its code are proprietary. Unauthorized copying, modification, 
 or distribution of this file via any medium is strictly prohibited.
