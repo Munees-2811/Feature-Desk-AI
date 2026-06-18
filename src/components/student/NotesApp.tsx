@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Trash2, Edit3, Plus, FileText, Search, BookOpen, Calendar, Tag, Clock, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Trash2, Edit3, Plus, FileText, Search, BookOpen, Calendar, Tag, Clock, ExternalLink, RefreshCw } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { fetchCanvasNotesHybrid } from '../../lib/db';
 
 interface ClassNote {
   id: string;
@@ -9,6 +10,9 @@ interface ClassNote {
   subject: string;
   classLevel: number;
   canvasData: string; // Base64 PNG of the canvas
+  pageThumbnails?: { [key: number]: string }; // Multi-page thumbnails
+  totalPages?: number;
+  currentPage?: number;
   createdAt: string;
   updatedAt: string;
   tags: string[];
@@ -23,6 +27,15 @@ export default function NotesApp() {
   const [selectedNote, setSelectedNote] = useState<ClassNote | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterSubject, setFilterSubject] = useState<string>('all');
+  const [previewPage, setPreviewPage] = useState(1);
+  const [isLoadingNotes, setIsLoadingNotes] = useState(false);
+
+  // When selected note changes, reset preview page
+  useEffect(() => {
+    if (selectedNote) {
+      setPreviewPage(selectedNote.currentPage || 1);
+    }
+  }, [selectedNote]);
 
   // Load saved notes from localStorage
   useEffect(() => {
@@ -31,29 +44,40 @@ export default function NotesApp() {
       setNotes(JSON.parse(savedNotes));
     } else {
       // Demo notes
-      setNotes([
-        {
-          id: '1',
-          title: 'Mathematics - Quadratic Equations',
-          subject: 'MATH',
-          classLevel: 10,
-          canvasData: '',
-          createdAt: '2024-12-20T10:00:00Z',
-          updatedAt: '2024-12-20T10:30:00Z',
-          tags: ['algebra', 'equations', 'chapter-5']
-        },
-        {
-          id: '2',
-          title: 'Science - Chemical Reactions',
-          subject: 'SCI',
-          classLevel: 10,
-          canvasData: '',
-          createdAt: '2024-12-19T14:00:00Z',
-          updatedAt: '2024-12-19T15:00:00Z',
-          tags: ['chemistry', 'lab-notes']
-        }
-      ]);
+      setNotes([]);
     }
+  }, [user]);
+
+  // Sync with cloud on mount
+  useEffect(() => {
+    const syncNotesFromCloud = async () => {
+      const userId = (user as any)?.id;
+      if (!userId || userId === 'guest') return;
+
+      setIsLoadingNotes(true);
+      try {
+        const cloudNotes = await fetchCanvasNotesHybrid(userId);
+        if (cloudNotes && cloudNotes.length > 0) {
+          // Compare and merge or just replace?
+          // Since cloud is source of truth across browsers, we replace the local state
+          // but preserve any local notes that aren't synced yet (ones with 'local_' ID)
+          setNotes((prevNotes) => {
+             const localOnlyNotes = prevNotes.filter(n => String(n.id).startsWith('local_'));
+             const mergedNotes = [...localOnlyNotes, ...cloudNotes];
+             
+             // Sort by date descending
+             mergedNotes.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+             return mergedNotes;
+          });
+        }
+      } catch (err) {
+        console.error('Failed to sync notes from cloud', err);
+      } finally {
+        setIsLoadingNotes(false);
+      }
+    };
+    
+    syncNotesFromCloud();
   }, [user]);
 
   // Save notes to localStorage when changed
@@ -270,7 +294,7 @@ export default function NotesApp() {
                   </div>
                   <div className="flex items-center">
                     <Edit3 className="w-4 h-4 mr-1" />
-                    Updated: {new Date(selectedNote.updatedAt).toLocaleString()}
+                    Updated: {selectedNote.updatedAt ? new Date(selectedNote.updatedAt).toLocaleString() : new Date(selectedNote.createdAt).toLocaleString()}
                   </div>
                 </div>
 
@@ -290,28 +314,82 @@ export default function NotesApp() {
 
               {/* Note Content (Canvas Preview) */}
               <div className="bg-white rounded-2xl shadow-lg p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">Note Preview</h3>
-                {selectedNote.canvasData ? (
-                  <div className="border border-gray-200 rounded-xl overflow-hidden">
-                    <img
-                      src={selectedNote.canvasData}
-                      alt="Note preview"
-                      className="w-full h-auto"
-                    />
-                  </div>
-                ) : (
-                  <div className="border-2 border-dashed border-gray-200 rounded-xl p-12 text-center">
-                    <FileText className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-                    <p className="text-gray-500">No canvas data saved</p>
-                    <p className="text-sm text-gray-400 mt-1">Open in Canvas to view or edit</p>
-                    <button
-                      onClick={() => handleOpenInCanvas(selectedNote)}
-                      className="mt-4 px-6 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
-                    >
-                      Open in Canvas
-                    </button>
-                  </div>
-                )}
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex items-center space-x-3">
+                  <h3 className="text-lg font-semibold text-gray-900">Note Preview</h3>
+                  {isLoadingNotes && (
+                    <RefreshCw className="w-5 h-5 text-blue-500 animate-spin" />
+                  )}
+                </div>
+                  {selectedNote.totalPages && selectedNote.totalPages > 1 && (
+                    <div className="flex items-center space-x-2 bg-gray-50 rounded-lg p-1 border border-gray-200">
+                      <button
+                        onClick={() => setPreviewPage(p => Math.max(1, p - 1))}
+                        disabled={previewPage === 1}
+                        className="px-2 py-1 text-gray-600 disabled:opacity-30 hover:bg-gray-200 rounded"
+                      >
+                        Prev
+                      </button>
+                      <div className="flex items-center text-sm font-medium text-gray-700 px-2">
+                        <span>Page</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={selectedNote.totalPages}
+                          value={previewPage}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            if (!isNaN(val) && val >= 1 && val <= (selectedNote.totalPages || 1)) {
+                              setPreviewPage(val);
+                            }
+                          }}
+                          className="w-12 text-center mx-1 border border-gray-300 rounded px-1 py-0.5"
+                        />
+                        <span>/ {selectedNote.totalPages}</span>
+                      </div>
+                      <button
+                        onClick={() => setPreviewPage(p => Math.min(selectedNote.totalPages || 1, p + 1))}
+                        disabled={previewPage === selectedNote.totalPages}
+                        className="px-2 py-1 text-gray-600 disabled:opacity-30 hover:bg-gray-200 rounded"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {(() => {
+                  const isSavedPage = previewPage === (selectedNote.currentPage || 1);
+                  const fallbackImage = isSavedPage ? selectedNote.canvasData : null;
+                  const imageToShow = selectedNote.pageThumbnails?.[previewPage] || fallbackImage;
+
+                  if (imageToShow) {
+                    return (
+                      <div className="border border-gray-200 rounded-xl overflow-hidden bg-gray-50 flex items-center justify-center min-h-[400px]">
+                        <img
+                          src={imageToShow}
+                          alt={`Note preview page ${previewPage}`}
+                          className="w-full h-auto object-contain"
+                        />
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="border border-dashed border-gray-200 rounded-xl p-12 text-center bg-gray-50 min-h-[400px] flex flex-col items-center justify-center">
+                      <FileText className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+                      <p className="text-gray-600 font-medium">Thumbnail not available for Page {previewPage}</p>
+                      <p className="text-sm text-gray-500 mt-2 max-w-sm mx-auto">
+                        This is an older note. The preview for this specific page wasn't saved.
+                      </p>
+                      <button
+                        onClick={() => handleOpenInCanvas(selectedNote)}
+                        className="mt-6 px-6 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
+                      >
+                        Open in Canvas to View
+                      </button>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           </div>
